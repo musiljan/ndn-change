@@ -129,21 +129,21 @@ d2x = 0.0005
 l1 = 0.000001
 
 HSMparams1 = NDNutils.ffnetwork_params(
-    input_dims=[1,NX,NX], layer_sizes=[hls,2*hls,NC1], ei_layers=[0,int(hls/2)],layers_to_normalize=[0],
-    reg_list={'d2x':[d2x,None,None],'l1':[l1,None,None],'max':[None,None,100]})
+    input_dims=[1,NX,NX], layer_sizes=[hls,2*hls,NC1], ei_layers=[0,int(hls/2)], normalization=[0], 
+    layer_types=['normal','normal','normal'], reg_list={'d2x':[d2x,None,None],'l1':[l1,None,None],'max':[None,None,100]})
 HSM1 = NDN.NDN( HSMparams1, noise_dist='gaussian' )
 HSMparams2 = NDNutils.ffnetwork_params(
-    input_dims=[1,NX,NX], layer_sizes=[hls,2*hls,NC2], ei_layers=[0,int(hls/2)],layers_to_normalize=[0],
-    reg_list={'d2x':[d2x,None,None],'l1':[l1,None,None],'max':[None,None,100]})
+    input_dims=[1,NX,NX], layer_sizes=[hls,2*hls,NC2], ei_layers=[0,int(hls/2)], normalization=[0], 
+    layer_types=['normal','normal','normal'], reg_list={'d2x':[d2x,None,None],'l1':[l1,None,None],'max':[None,None,100]})
 HSM2 = NDN.NDN( HSMparams2, noise_dist='gaussian' )
 HSMparams3 = NDNutils.ffnetwork_params(
-    input_dims=[1,NX,NX], layer_sizes=[hls,2*hls,NC3], ei_layers=[0,int(hls/2)],layers_to_normalize=[0],
-    reg_list={'d2x':[d2x,None,None],'l1':[l1,None,None],'max':[None,None,100]})
+    input_dims=[1,NX,NX], layer_sizes=[hls,2*hls,NC3], ei_layers=[0,int(hls/2)], normalization=[0], 
+    layer_types=['normal','normal','normal'], reg_list={'d2x':[d2x,None,None],'l1':[l1,None,None],'max':[None,None,100]})
 HSM3 = NDN.NDN( HSMparams3, noise_dist='gaussian' )
 
-iter = HSM1.train( input_data=Cstim1, output_data=Crobs1, train_indxs=np.array(range(NT1)))
-iter = HSM2.train( input_data=Cstim2, output_data=Crobs2, train_indxs=np.array(range(NT2)))
-iter = HSM3.train( input_data=Cstim3, output_data=Crobs3, train_indxs=np.array(range(NT3)))
+iter = HSM1.train( input_data=Cstim1, output_data=Crobs1, train_indxs=np.array(range(NT1)), learning_alg="lbfgs")
+iter = HSM2.train( input_data=Cstim2, output_data=Crobs2, train_indxs=np.array(range(NT2)), learning_alg="lbfgs")
+iter = HSM3.train( input_data=Cstim3, output_data=Crobs3, train_indxs=np.array(range(NT3)), learning_alg="lbfgs")
 
 pred1 = HSM1.generate_prediction(input_data=Cstim1)[range(NT1, NT1+50)]
 pred2 = HSM2.generate_prediction(input_data=Cstim2)[range(NT2, NT2+50)]
@@ -151,20 +151,27 @@ pred3 = HSM3.generate_prediction(input_data=Cstim3)[range(NT3, NT3+50)]
 
 
 HSMparamsC = NDNutils.ffnetwork_params(
-        input_dims=[1,NX,NX], layer_sizes=[hls,2*hls,NC], ei_layers=[0,int(hls/2)],layers_to_normalize=[0],
-        reg_list={'d2x':[d2x,None,None],'l1':[l1,None,None],'max':[None,None,100]})
+        input_dims=[1,NX,NX], layer_sizes=[hls,2*hls,NC], ei_layers=[0,int(hls/2)], normalization=[0],
+        layer_types=['normal','normal','normal'], reg_list={'d2x':[d2x,None,None],'l1':[l1,None,None],'max':[None,None,100]})
 HSMcomb = NDN.NDN( HSMparamsC, noise_dist='gaussian')
     
-iter = HSMcomb.train( input_data=Cstim, output_data=Crobs, train_indxs=np.array(Ui), data_filters=Cval_resps)
+iter = HSMcomb.train( 
+        input_data=Cstim, output_data=Crobs, train_indxs=np.array(Ui), data_filters=Cval_resps, learning_alg="lbfgs")
+
+# JM EDIT - otherwise fails
+HSM1.batch_size=50;
+HSM2.batch_size=50;
+HSM3.batch_size=50;
 
 # Evaluate models on different cross-val sets
-LLs1 = HSM1.eval_models( input_data=Cstim1, output_data=Crobs1, data_indxs=range(NT1, NT1+50) )
-LLs2 = HSM2.eval_models( input_data=Cstim2, output_data=Crobs2, data_indxs=range(NT2, NT2+50) )
-LLs3 = HSM3.eval_models( input_data=Cstim3, output_data=Crobs3, data_indxs=range(NT3, NT3+50) )
+LLs1 = HSM1.eval_models( input_data=Cstim1, output_data=Crobs1, data_indxs=np.array(range(NT1, NT1+50)) )
+LLs2 = HSM2.eval_models( input_data=Cstim2, output_data=Crobs2, data_indxs=np.array(range(NT2, NT2+50)) )
+LLs3 = HSM3.eval_models( input_data=Cstim3, output_data=Crobs3, data_indxs=np.array(range(NT3, NT3+50)) )
 
-LLsC1 = HSMcomb.eval_models( input_data=Cstim, output_data=Crobs, data_indxs= range(NT, NT+50), data_filters=Cval_resps )
-LLsC2 = HSMcomb.eval_models( input_data=Cstim, output_data=Crobs, data_indxs= range(NT+50, NT+100), data_filters=Cval_resps )
-LLsC3 = HSMcomb.eval_models( input_data=Cstim, output_data=Crobs, data_indxs= range(NT+100, NT+150), data_filters=Cval_resps )
+HSMcomb.batch_size=50;
+LLsC1 = HSMcomb.eval_models( input_data=Cstim, output_data=Crobs, data_indxs=np.array(range(NT, NT+50)), data_filters=Cval_resps )
+LLsC2 = HSMcomb.eval_models( input_data=Cstim, output_data=Crobs, data_indxs=np.array(range(NT+50, NT+100)), data_filters=Cval_resps )
+LLsC3 = HSMcomb.eval_models( input_data=Cstim, output_data=Crobs, data_indxs=np.array(range(NT+100, NT+150)), data_filters=Cval_resps )
 
 pred_comb1 = HSMcomb.generate_prediction(input_data=Cstim)[range(NT, NT+50)][:,range(NC1)]
 pred_comb2 = HSMcomb.generate_prediction(input_data=Cstim)[range(NT+50, NT+100)][:,range(NC1,NC1+NC2)]

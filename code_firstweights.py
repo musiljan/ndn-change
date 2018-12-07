@@ -129,8 +129,8 @@ d2x = 0.0005
 l1 = 0.000001
 
 HSMparams1 = NDNutils.ffnetwork_params(
-    input_dims=[1,NX,NX], layer_sizes=[hls,2*hls,NC1], ei_layers=[0,int(hls/2)],layers_to_normalize=[0],
-    reg_list={'d2x':[d2x,None,None],'l1':[l1,None,None],'max':[None,None,100]})
+    input_dims=[1,NX,NX], layer_sizes=[hls,2*hls,NC1], ei_layers=[0,int(hls/2)], normalization=[0],
+    layer_types=['normal','normal','normal'], reg_list={'d2x':[d2x,None,None],'l1':[l1,None,None],'max':[None,None,100]})
 HSM1 = NDN.NDN( HSMparams1, noise_dist='gaussian' )
 
 # Display randomly generated weights in first 8 neurons in 1st layer

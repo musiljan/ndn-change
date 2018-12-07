@@ -12,6 +12,9 @@ from FFnetwork.ffnetwork import SideNetwork
 from .network import Network
 from NDNutils import concatenate_input_dims
 
+from FFnetwork.tlayer import *
+from FFnetwork.layer import *
+
 
 class NDN(Network):
     """Tensorflow (tf) implementation of Neural Deep Network class
@@ -54,8 +57,8 @@ class NDN(Network):
     """
 
     _allowed_noise_dists = ['gaussian', 'poisson', 'bernoulli']
-    _allowed_layer_types = ['normal', 'conv', 'sep', 'convsep', 'add']
-    # ca_tent # pre0 (stim preprocessing layer?)
+    _allowed_network_types = ['normal', 'side']
+    _allowed_layer_types = ['normal', 'conv', 'sep', 'convsep', 'add', 'biconv', 'spike_history']
 
     def __init__(
             self,
@@ -129,7 +132,6 @@ class NDN(Network):
         # list of output sizes (for Robs placeholders)
         self.output_sizes = [0] * len(ffnet_out)
         self.noise_dist = noise_dist
-        self.poisson_unit_norm = None
         self.tf_seed = tf_seed
 
         self._define_network()
@@ -209,14 +211,13 @@ class NDN(Network):
             ffnet_n = self.ffnet_out[nn]
             self.output_sizes[nn] = \
                 self.networks[ffnet_n].layers[-1].weights.shape[1]
-
     # END NDN._define_network
 
     def _build_graph(
             self,
             learning_alg='adam',
             opt_params=None,
-            variable_list=None):
+            fit_variables=None):
         """NDN._build_graph"""
 
         # Take care of optimize parameters if necessary
@@ -292,7 +293,7 @@ class NDN(Network):
                 self._define_loss()
 
             # Define optimization routine
-            var_list = self._build_fit_variable_list(variable_list)
+            var_list = self._build_fit_variable_list(fit_variables)
 
             with tf.variable_scope('optimizer'):
                 self._define_optimizer(
@@ -329,8 +330,7 @@ class NDN(Network):
             # define cost function
             if self.noise_dist == 'gaussian':
                 with tf.name_scope('gaussian_loss'):
-                    cost.append(
-                        tf.nn.l2_loss(data_out - pred) / nt)
+                    cost.append(tf.nn.l2_loss(data_out - pred) / nt)
                     unit_cost.append(tf.reduce_mean(tf.square(data_out-pred), axis=0))
 
             elif self.noise_dist == 'poisson':
@@ -414,7 +414,7 @@ class NDN(Network):
         return var_list
     # END _generate_variable_list
 
-    def variables_to_fit(self, layers_to_skip=None, fit_biases=False):
+    def fit_variables(self, layers_to_skip=None, fit_biases=False):
         """Generates a list-of-lists-of-lists of correct format to specify all 
         the variables to fit, as an argument for network.train
 
@@ -460,18 +460,47 @@ class NDN(Network):
         return fit_list
         # END NDN.set_fit_variables
 
-    def set_regularization(self, reg_type, reg_val, ffnet_n=0,
-                           layer_target=None):
+
+    def set_partial_fit(self, ffnet_target=0, layer_target=None, value=None):
+        """ Assign partial_fit values
+
+        Args:
+            ffnet_target (int): which network
+            layer_target (int): which layer
+            value (0, 1, or None): partial_fit value to be assigned
+                - 0 ---> fit only temporal part
+                - 1 ---> fit only spatial part
+                - anything else ---> fit everything
+        """
+
+        if value == 0:
+            translation = 'only --temporal--'
+        elif value == 1:
+            translation = 'only --spatial--'
+        else:
+            translation = '--everything--'
+
+        if type(self.networks[ffnet_target].layers[layer_target]) is SepLayer or ConvSepLayer:
+            self.networks[ffnet_target].layers[layer_target].partial_fit = value
+            self.networks[ffnet_target].layers[layer_target].reg.partial_fit = value
+
+            print('....partial_fit value for --net%sL%s-- set to %s, %s will be fit'
+                  % (ffnet_target, layer_target, value, translation))
+        else:
+            raise ValueError('partial fit should be used only with Seplayer families.')
+    # END NDN.set_partial_fit
+
+    def set_regularization(self, reg_type, reg_val, ffnet_target=0, layer_target=None):
         """Add or reassign regularization values
 
         Args:
             reg_type (str): see allowed_reg_types in regularization.py
             reg_val (int): corresponding regularization value
-            ffnet_n (int): which network to assign regularization to 
+            ffnet_target (int): which network to assign regularization to
                 DEFAULT: 0
             layer_target (int or list of ints): specifies which layers the
                 current reg_type/reg_val pair is applied to 
-                DEFAULT: all layers in ffnet_n
+                DEFAULT: all layers in ffnet_target
 
         """
 
@@ -484,7 +513,7 @@ class NDN(Network):
 
         # set regularization at the layer level
         for layer in layer_target:
-            self.networks[ffnet_n].layers[layer].set_regularization(
+            self.networks[ffnet_target].layers[layer].set_regularization(
                 reg_type, reg_val)
     # END set_regularization
 
@@ -546,7 +575,7 @@ class NDN(Network):
             # build iterator object to access elements from dataset
             iterator_tr = dataset.make_one_shot_iterator()
 
-        # Place graph operations on CPU
+        # Potentially place graph operations on CPU
         if not use_gpu:
             #temp_config = tf.ConfigProto(device_count={'GPU': 0})
             with tf.device('/cpu:0'):
@@ -557,33 +586,37 @@ class NDN(Network):
 
         with tf.Session(graph=self.graph, config=self.sess_config) as sess:
 
-            self._restore_params(
-                sess, input_data, output_data, data_filters=data_filters)
+            self._restore_params(sess, input_data, output_data, data_filters=data_filters)
 
-            #cost = self._get_test_cost(
-            #    sess, input_data=input_data, output_data=output_data,
-            #    data_filters=data_filters, test_indxs=data_indxs)
-            num_batches_tr = data_indxs.shape[0] // self.batch_size
-            cost_tr = 0
-            for batch_tr in range(num_batches_tr):
-                batch_indxs_tr = data_indxs[
-                                 batch_tr * self.batch_size:(batch_tr + 1) * self.batch_size]
-                if self.data_pipe_type == 'data_as_var':
-                    feed_dict = {self.indices: batch_indxs_tr}
-                elif self.data_pipe_type == 'feed_dict':
-                    feed_dict = self._get_feed_dict(
-                        input_data=input_data,
-                        output_data=output_data,
-                        data_filters=data_filters,
-                        batch_indxs=batch_indxs_tr)
-                elif self.data_pipe_type == 'iterator':
+            cost_tr = self._get_test_cost(
+                sess=sess,
+                input_data=input_data,
+                output_data=output_data,
+                data_filters=data_filters,
+                test_indxs=data_indxs,
+                test_batch_size=self.batch_size)
+
+            #num_batches_tr = data_indxs.shape[0] // self.batch_size
+            #cost_tr = 0
+            #for batch_tr in range(num_batches_tr):
+            #    batch_indxs_tr = data_indxs[
+            #                     batch_tr * self.batch_size:(batch_tr + 1) * self.batch_size]
+            #    if self.data_pipe_type == 'data_as_var':
+            #        feed_dict = {self.indices: batch_indxs_tr}
+            #    elif self.data_pipe_type == 'feed_dict':
+            #        feed_dict = self._get_feed_dict(
+            #            input_data=input_data,
+            #            output_data=output_data,
+            #            data_filters=data_filters,
+            #            batch_indxs=batch_indxs_tr)
+            #    elif self.data_pipe_type == 'iterator':
                     # get string handle of iterator
-                    iter_handle_tr = sess.run(iterator_tr.string_handle())
-                    feed_dict = {self.iterator_handle: iter_handle_tr}
+            #        iter_handle_tr = sess.run(iterator_tr.string_handle())
+            #        feed_dict = {self.iterator_handle: iter_handle_tr}
 
-                cost_tr += sess.run(self.cost, feed_dict=feed_dict)
+            #    cost_tr += sess.run(self.cost, feed_dict=feed_dict)
 
-            cost_tr /= num_batches_tr
+            #cost_tr /= num_batches_tr
 
         return cost_tr
     # END get_LL
@@ -639,27 +672,25 @@ class NDN(Network):
             data_indxs = np.arange(self.num_examples)
 
         # build datasets if using 'iterator' pipeline
-        if self.data_pipe_type == 'iterator':
-            dataset = self._build_dataset(
-                input_data=input_data,
-                output_data=output_data,
-                data_filters=data_filters,
-                indxs=data_indxs,
-                training_dataset=False,
-                batch_size=self.num_examples)
-            # store info on dataset for buiding data pipeline
-            self.dataset_types = dataset.output_types
-            self.dataset_shapes = dataset.output_shapes
-            # build iterator object to access elements from dataset
-            iterator = dataset.make_one_shot_iterator()
+        #if self.data_pipe_type == 'iterator':
+        #    dataset = self._build_dataset(
+        #        input_data=input_data,
+        #        output_data=output_data,
+        #        data_filters=data_filters,
+        #        indxs=data_indxs,
+        #        training_dataset=False,
+        #        batch_size=self.num_examples)
+        #    # store info on dataset for buiding data pipeline
+        #    self.dataset_types = dataset.output_types
+        #    self.dataset_shapes = dataset.output_shapes
+        #    # build iterator object to access elements from dataset
+        #    iterator = dataset.make_one_shot_iterator()
 
         # Place graph operations on CPU
         if not use_gpu:
-            #temp_config = tf.ConfigProto(device_count={'GPU': 0})
             with tf.device('/cpu:0'):
                 self._build_graph()
         else:
-            #temp_config = tf.ConfigProto(device_count={'GPU': 1})
             self._build_graph()
 
         with tf.Session(graph=self.graph, config=self.sess_config) as sess:
@@ -667,29 +698,13 @@ class NDN(Network):
             self._restore_params(
                 sess, input_data, output_data, data_filters=data_filters)
 
-            if self.data_pipe_type == 'data_as_var':
-                # get the feed_dict for batch_indxs
-                feed_dict = {self.indices: data_indxs}
-                ll_neuron = sess.run(self.unit_cost, feed_dict=feed_dict)
-            elif self.batch_size is None:
-                if self.data_pipe_type == 'feed_dict':
-                    feed_dict = self._get_feed_dict(
-                        input_data=input_data,
-                        output_data=output_data,
-                        data_filters=data_filters,
-                        batch_indxs=data_indxs)
-                elif self.data_pipe_type == 'iterator':
-                    # get string handle of iterator
-                    iter_handle = sess.run(iterator.string_handle())
-                    feed_dict = {self.iterator_handle: iter_handle}
-
-                ll_neuron = sess.run(self.unit_cost, feed_dict=feed_dict)
-            else:
+            if self.batch_size is not None:
                 num_batches_test = data_indxs.shape[0] // self.batch_size
+
                 for batch_test in range(num_batches_test):
                     batch_indxs_test = data_indxs[
-                        batch_test * self.batch_size:
-                        (batch_test + 1) * self.batch_size]
+                                       batch_test * self.batch_size:
+                                       (batch_test + 1) * self.batch_size]
                     if self.data_pipe_type == 'data_as_var':
                         feed_dict = {self.indices: batch_indxs_test}
                     elif self.data_pipe_type == 'feed_dict':
@@ -708,6 +723,20 @@ class NDN(Network):
 
                 ll_neuron = np.divide(unit_cost, num_batches_test)
 
+            else:  # no batch-size given
+                if self.data_pipe_type == 'data_as_var':
+                    feed_dict = {self.indices: data_indxs}
+                elif self.data_pipe_type == 'feed_dict':
+                    feed_dict = self._get_feed_dict(
+                        input_data=input_data,
+                        output_data=output_data,
+                        data_filters=data_filters,
+                        batch_indxs=data_indxs)
+                elif self.data_pipe_type == 'iterator':
+                    feed_dict = {self.iterator_handle: data_indxs}
+
+                ll_neuron = sess.run(self.unit_cost, feed_dict=feed_dict)
+
             if nulladjusted:
                 # note that ll_neuron is negative of the true log-likelihood,
                 # but get_null_ll is not (so + is actually subtraction)
@@ -722,7 +751,7 @@ class NDN(Network):
     # END get_LL_neuron
 
     def generate_prediction(self, input_data, data_indxs=None, use_gpu=False,
-                            ffnet_n=-1, layer=-1):
+                            ffnet_target=-1, layer_target=-1):
         """Get cost for each output neuron without regularization terms
 
         Args:
@@ -730,17 +759,17 @@ class NDN(Network):
             data_indxs (numpy array, optional): indexes of data to use in
                 calculating forward pass; if not supplied, all data is used
             use_gpu (True or False): Obvious
-            ffnet_n (int, optional): index into `network_list` that specifies 
+            ffnet_target (int, optional): index into `network_list` that specifies
                 which FFNetwork to generate the prediction from
-            layer (int, optional): index into layers of network_list[ffnet_n]
+            layer_target (int, optional): index into layers of network_list[ffnet_target]
                 that specifies which layer to generate prediction from
 
         Returns:
-            numpy array: pred values from network_list[ffnet_n].layers[layer]
+            numpy array: pred values from network_list[ffnet_target].layers[layer]
                 
         Raises:
             ValueError: If `layer` index is larger than number of layers in
-                network_list[ffnet_n]                
+                network_list[ffnet_target]
 
         """
 
@@ -754,35 +783,31 @@ class NDN(Network):
                     'Input data dims must match across input_data.')
         if data_indxs is None:
             data_indxs = np.arange(self.num_examples)
-        if layer >= len(self.networks[ffnet_n].layers):
+        if layer_target >= len(self.networks[ffnet_target].layers):
                 ValueError('This layer does not exist.')
         if data_indxs is None:
             data_indxs = np.arange(self.num_examples)
 
-        # Generate fake_output data and take care of data-filtering, in case
-        # necessary
+        # change data_pipe_type to feed_dict
+        #original_pipe_type = deepcopy(self.data_pipe_type)
+        #self.data_pipe_type = 'data_as_var'
+
+        # Generate fake_output data and take care of data-filtering, in case necessary
         self.filter_data = False
         num_outputs = len(self.ffnet_out)
         output_data = [None] * num_outputs
         for nn in range(num_outputs):
             output_data[nn] = np.zeros(
-                [self.num_examples,
-                 self.networks[ffnet_n].layers[-1].weights.shape[1]],
+                [self.num_examples, self.networks[self.ffnet_out[nn]].layers[-1].weights.shape[1]],
                 dtype='float32')
 
-        # build datasets if using 'iterator' pipeline
-        if self.data_pipe_type == 'iterator':
-            dataset = self._build_dataset(
-                input_data=input_data,
-                output_data=output_data,
-                indxs=data_indxs,
-                training_dataset=False,
-                batch_size=self.num_examples)
-            # store info on dataset for buiding data pipeline
-            self.dataset_types = dataset.output_types
-            self.dataset_shapes = dataset.output_shapes
-            # build iterator object to access elements from dataset
-            iterator = dataset.make_one_shot_iterator()
+        if (self.batch_size is None) or (self.batch_size > data_indxs.shape[0]):
+            batch_size_save = self.batch_size
+            self.batch_size = data_indxs.shape[0]
+        else:
+            batch_size_save = None
+
+        num_batches_test = data_indxs.shape[0] // self.batch_size
 
         # Place graph operations on CPU
         if not use_gpu:
@@ -797,20 +822,31 @@ class NDN(Network):
 
             self._restore_params(sess, input_data, output_data)
 
-            if self.data_pipe_type == 'data_as_var':
-                feed_dict = {self.indices: data_indxs}
-            elif self.data_pipe_type == 'feed_dict':
-                feed_dict = self._get_feed_dict(
-                    input_data=input_data,
-                    batch_indxs=data_indxs)
-            elif self.data_pipe_type == 'iterator':
-                # get string handle of iterator
-                iter_handle = sess.run(iterator.string_handle())
-                feed_dict = {self.iterator_handle: iter_handle}
+            for batch_test in range(num_batches_test):
 
-            pred = sess.run(
-                self.networks[ffnet_n].layers[layer].outputs,
-                feed_dict=feed_dict)
+                batch_indxs_test = data_indxs[batch_test * self.batch_size:(batch_test + 1) * self.batch_size]
+                feed_dict = {self.indices: batch_indxs_test}
+
+                if batch_test == 0:
+                    pred = sess.run(
+                        self.networks[ffnet_target].layers[layer_target].outputs,
+                        feed_dict=feed_dict)
+                else:
+                    pred = np.concatenate( (pred, sess.run(
+                        self.networks[ffnet_target].layers[layer_target].outputs,
+                        feed_dict=feed_dict)), axis=0)
+
+            # Add last fraction (if batches did not include all data
+            if pred.shape[0] < data_indxs.shape[0]:
+                batch_indxs_test = data_indxs[num_batches_test * self.batch_size:data_indxs.shape[0]]
+                feed_dict = {self.indices: batch_indxs_test}
+                pred = np.concatenate((pred, sess.run(
+                    self.networks[ffnet_target].layers[layer_target].outputs, feed_dict=feed_dict)), axis=0)
+
+        # change the data_pipe_type to original
+        # self.data_pipe_type = original_pipe_type
+        if batch_size_save is not None:
+            self.batch_size = batch_size_save
 
         return pred
     # END generate_prediction
@@ -819,6 +855,9 @@ class NDN(Network):
         """Return reg penalties in a dictionary"""
 
         reg_dict = {}
+        if self.graph is None:
+            self._build_graph()
+
         with tf.Session(graph=self.graph, config=self.sess_config) as sess:
 
             # initialize all parameters randomly
@@ -876,8 +915,7 @@ class NDN(Network):
         sio.savemat(filename, matdata)
 
     def initialize_output_layer_bias(self, robs):
-        """Sets biases in output layer(w) to explain mean firing rate, using 
-        Robs"""
+        """Sets biases in output layer(w) to explain mean firing rate, using Robs"""
 
         if robs is not list:
             robs = [robs]

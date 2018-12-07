@@ -4,6 +4,7 @@ from __future__ import division
 import numpy as np
 import NDN as NDN
 import NDNutils as NDNutils
+import matplotlib.pyplot as plt
 from copy import deepcopy
 
 
@@ -15,11 +16,12 @@ def reg_path(
         test_indxs=None,
         reg_type='l1',
         reg_vals=[1e-6, 1e-4, 1e-3, 1e-2, 0.1, 1],
-        ffnet_n=0,
-        layer_n=0,
+        ffnet_target=0,
+        layer_target=0,
         data_filters=None,
         opt_params=None,
-        variable_list=None):
+        fit_variables=None,
+        output_dir=None):
 
     """perform regularization over reg_vals to determine optimal cross-validated loss
 
@@ -49,13 +51,13 @@ def reg_path(
     test_mods = []
 
     for nn in range(num_regs):
-        print('\nRegulariation test: %s = %s:\n' % (reg_type, str(reg_vals[nn])))
+        print('\nRegularization test: %s = %s:\n' % (reg_type, str(reg_vals[nn])))
         test_mod = ndn_mod.copy_model()
-        test_mod.set_regularization(reg_type, reg_vals[nn], ffnet_n, layer_n)
+        test_mod.set_regularization(reg_type, reg_vals[nn], ffnet_target, layer_target)
         test_mod.train(input_data=input_data, output_data=output_data,
                        train_indxs=train_indxs, test_indxs=test_indxs,
-                       data_filters=data_filters, variable_list=variable_list,
-                       learning_alg='adam', opt_params=opt_params)
+                       data_filters=data_filters, fit_variables=fit_variables,
+                       learning_alg='adam', opt_params=opt_params, output_dir=output_dir)
         LLxs[nn] = np.mean(
             test_mod.eval_models(input_data=input_data, output_data=output_data,
                                  data_indxs=test_indxs, data_filters=data_filters))
@@ -127,6 +129,7 @@ def filtered_eval_model(
 
     if data_filters is None:
         inds = test_indxs
+        assert ndn_mod.filter_data is None, 'Must include data_filter given model history.'
     else:
         inds = np.intersect1d(test_indxs, np.where(data_filters[:, int(unit_number)] > 0))
 
@@ -155,6 +158,25 @@ def filtered_eval_model(
 # END filtered_eval_model
 
 
+def spatial_profile_info(xprofile):
+    """Calculate the mean and standard deviation of xprofile along one dimension"""
+    # Calculate mean of filter
+
+    if isinstance(xprofile, list):
+        k = np.square(np.array(xprofile))
+    else:
+        k = np.square(xprofile.copy())
+
+    NX = xprofile.shape[0]
+
+    nrms = np.maximum(np.sum(k), 1e-10)
+    mn_pos = np.divide(np.sum(np.multiply(k, range(NX))), nrms)
+    xs = np.array([range(NX)] * np.ones([NX, 1])) - np.array([mn_pos] * np.ones([NX, 1]))
+    stdev = np.sqrt(np.divide(np.sum(np.multiply(k, np.square(xs))), nrms))
+    return mn_pos, stdev
+# END spatial_profile_info
+
+
 def spatial_spread(filters, axis=0):
     """Calculate the spatial spread of a list of filters along one dimension"""
     # Calculate mean of filter
@@ -172,16 +194,21 @@ def spatial_spread(filters, axis=0):
 # END spatial_spread
 
 
+
 def plot_filters(ndn_mod):
 
-    import matplotlib.pyplot as plt  # plotting
+    # Check to see if there is a temporal layer first
+    if np.prod(ndn_mod.networks[0].layers[0].filter_dims[1:]) == 1:
+        ks = tbasis_recover_filters(ndn_mod)
+        plt.plot(ndn_mod.networks[0].layers[0].weights)
+        plt.title('Temporal basis')
+        num_lags = ndn_mod.networks[0].layers[0].filter_dims[0]
+        filter_width = ndn_mod.networks[0].layers[1].filter_dims[1]
+    else:
+        ks = ndn_mod.networks[0].layers[0].weights
+        num_lags, filter_width = ndn_mod.networks[0].layers[0].filter_dims[:2]
 
-    ks = ndn_mod.networks[0].layers[0].weights
     num_filters = ks.shape[1]
-    #num_lags = ndn_mod.network_list[0]['input_dims'][0]
-    #filter_width = ks.shape[0] // num_lags
-    filter_width = ndn_mod.network_list[0]['input_dims'][1]*ndn_mod.network_list[0]['input_dims'][2]
-    num_lags = ks.shape[0] // filter_width
 
     if num_filters/10 == num_filters//10:
         cols = 10
@@ -198,10 +225,12 @@ def plot_filters(ndn_mod):
     fig, ax = plt.subplots(nrows=rows, ncols=cols)
     fig.set_size_inches(18 / 6 * cols, 7 / 4 * rows)
     for nn in range(num_filters):
-        plt.subplot(rows, cols, nn + 1)
+        ax = plt.subplot(rows, cols, nn + 1)
         plt.imshow(np.transpose(np.reshape(ks[:, nn], [filter_width, num_lags])),
                    cmap='Greys', interpolation='none',
                    vmin=-max(abs(ks[:, nn])), vmax=max(abs(ks[:, nn])), aspect='auto')
+        ax.set_yticklabels([])
+        ax.set_xticklabels([])
     plt.show()
 # END plot_filters
 
@@ -221,7 +250,7 @@ def side_network_analyze(side_ndn, cell_to_plot=None, plot_aspect='auto'):
     Output:
         returns the weights as organized as descrived above
     """
-    import matplotlib.pyplot as plt  # plotting
+
     if plot_aspect != 'auto':
         plot_aspect = 'equal'
 
@@ -232,9 +261,12 @@ def side_network_analyze(side_ndn, cell_to_plot=None, plot_aspect='auto'):
     else:
         is_conv = False
 
-    num_space = side_ndn.network_list[0]['input_dims'][1]
+    # number of spatial dims depends on whether first side layer is convolutional or not
+    #num_space = side_ndn.networks[0].input_dims[1]*side_ndn.networks[0].input_dims[2]
+    num_space = int(side_ndn.networks[1].layers[0].weights.shape[0]/ side_ndn.networks[1].input_dims[0])
     num_cells = side_ndn.network_list[1]['layer_sizes'][-1]
-    filter_nums = side_ndn.network_list[0]['layer_sizes'][:]
+    filter_nums = side_ndn.networks[1].num_units[:]
+    #filter_nums = side_ndn.network_list[0]['layer_sizes'][:]
     num_layers = len(filter_nums)
 
     # Adjust effective space/filter number if binocular model
@@ -246,9 +278,9 @@ def side_network_analyze(side_ndn, cell_to_plot=None, plot_aspect='auto'):
         fig, ax = plt.subplots(nrows=1, ncols=num_layers)
         fig.set_size_inches(16, 3)
 
-    wside = side_ndn.networks[1].layers[0].weights
+    # Reshape whole weight matrix
+    wside = np.reshape(side_ndn.networks[1].layers[0].weights, [num_space, np.sum(filter_nums), num_cells])
     num_inh = side_ndn.network_list[0]['num_inh']
-    ws = []
 
     # identify max and min weights for plotting (if plotting)
     if cell_to_plot is not None:
@@ -265,18 +297,18 @@ def side_network_analyze(side_ndn, cell_to_plot=None, plot_aspect='auto'):
         else:
             img_max = -img_min
 
+    fcount = 0
+    ws = []
     for ll in range(num_layers):
-        wtemp = wside[range(ll, len(wside), num_layers), :]
-        if is_conv:
-            ws.append(np.reshape(wtemp[range(filter_nums[ll] * num_space), :],
-                                 [num_space, filter_nums[ll], num_cells]))
-        else:
-            ws.append(np.reshape(wtemp[range(filter_nums[ll]), :], [filter_nums[ll], num_cells]))
+        #wtemp = wside[range(ll, len(wside), num_layers), :]
+        wtemp = wside[:, range(fcount, fcount+filter_nums[ll]), :]
+        ws.append(wtemp.copy())
+        fcount += filter_nums[ll]
 
         if cell_to_plot is not None:
             plt.subplot(1, num_layers, ll+1)
             if is_conv:
-                plt.imshow(ws[ll][:, :, cell_to_plot], aspect=plot_aspect, interpolation='none', cmap='bwr',
+                plt.imshow(wtemp[:, :, cell_to_plot], aspect=plot_aspect, interpolation='none', cmap='bwr',
                            vmin=img_min, vmax=img_max)
                 # Put line in for inhibitory units
                 if num_inh[ll] > 0:
@@ -285,7 +317,7 @@ def side_network_analyze(side_ndn, cell_to_plot=None, plot_aspect='auto'):
                 if side_ndn.network_list[0]['layer_types'][ll] == 'biconv':
                     plt.plot([filter_nums[ll]/2, filter_nums[ll]/2], [-0.5, num_space-0.5], 'w')
             else:
-                plt.imshow(np.transpose(ws[ll]), aspect='auto', interpolation='none', cmap='bwr',
+                plt.imshow(np.transpose(wtemp), aspect='auto', interpolation='none', cmap='bwr',
                            vmin=img_min, vmax=img_max)  # will plot all cells
                 # Put line in for inhibitory units
                 if num_inh[ll] > 0:
@@ -295,7 +327,7 @@ def side_network_analyze(side_ndn, cell_to_plot=None, plot_aspect='auto'):
     return ws
 
 
-def side_network_properties(side_ndn):
+def side_network_properties(side_ndn, norm_type=0):
 
     ws = side_network_analyze(side_ndn)
     wside = side_ndn.networks[-1].layers[-1].weights
@@ -324,14 +356,24 @@ def side_network_properties(side_ndn):
                 NE = ws[ll].shape[1] - num_inh[ll]
                 elocs = range(NE)
                 ilocs = range(NE, ws[ll].shape[1])
-                EIspatial[0, ll, :, :] = np.sum(ws[ll][:, elocs, :], axis=1)
-                EIspatial[1, ll, :, :] = np.sum(ws[ll][:, ilocs, :], axis=1)
-                EIlayer[:, ll, :] = np.sum(EIspatial[:, ll, :, :], axis=1)
+                if norm_type == 0:
+                    EIspatial[0, ll, :, :] = np.sum(ws[ll][:, elocs, :], axis=1)
+                    EIspatial[1, ll, :, :] = np.sum(ws[ll][:, ilocs, :], axis=1)
+                    EIlayer[:, ll, :] = np.sum(EIspatial[:, ll, :, :], axis=1)
+                else:
+                    EIspatial[0, ll, :, :] = np.sqrt(np.sum(np.square(ws[ll][:, elocs, :]), axis=1))
+                    EIspatial[1, ll, :, :] = np.sqrt(np.sum(np.square(ws[ll][:, ilocs, :]), axis=1))
+                    EIlayer[:, ll, :] = np.sqrt(np.sum(np.square(EIspatial[:, ll, :, :]), axis=1))
+
         else:
             layer_weights[ll, :] = np.sqrt(np.sum(np.square(ws[ll]), axis=0)) / cell_nrms
 
     if np.sum(num_inh) > 0:
-        Enorm = np.sum(EIlayer[0, :, :], axis=0)
+        if norm_type == 0:
+            Enorm = np.sum(EIlayer[0, :, :], axis=0)
+        else:
+            Enorm = np.sqrt(np.sum(np.square(EIlayer[0, :, :]), axis=0))
+
         EIlayer = np.divide(EIlayer, Enorm)
         EIspatial = np.divide(EIspatial, Enorm)
 
@@ -428,8 +470,6 @@ def side_distance_matrix(side_ndn, level=None, EI=None):
 def evaluate_ffnetwork(ffnet, end_weighting=None, to_plot=False, thresh_list=None, percent_drop=None):
     """Analyze FFnetwork nodes to determine their contribution in the big picture.
     thresh_list and percent_drop apply criteria for each layer (one or other) to suggest units to drop"""
-
-    import matplotlib.pyplot as plt  # plotting
 
     num_layers = len(ffnet.layers)
     num_unit_bot = ffnet.layers[-1].weights.shape[1]
@@ -698,7 +738,6 @@ def join_ndns(ndn1, ndn2, units2=None):
 
 
 def subplot_setup(num_rows, num_cols, row_height=2):
-    import matplotlib.pyplot as plt  # plotting
     fig, ax = plt.subplots(nrows=num_rows, ncols=num_cols)
     fig.set_size_inches(16, row_height*num_rows)
 
@@ -720,4 +759,249 @@ def matlab_export(filename, variable_list):
         matdata[key_name] = variable_list[nn]
 
     sio.savemat(filename, matdata)
+
+
+def tbasis_recover_filters(ndn_mod):
+
+    assert np.prod(ndn_mod.networks[0].layers[0].filter_dims[1:]) == 1, 'only works with temporal-only basis'
+
+    idims = ndn_mod.networks[0].layers[1].filter_dims
+    nlags = ndn_mod.networks[0].layers[0].filter_dims[0]
+    num_filts = ndn_mod.networks[0].layers[1].weights.shape[1]
+    tkerns = ndn_mod.networks[0].layers[0].weights
+
+    ks = np.zeros([idims[1]*idims[2]*nlags, num_filts])
+    for nn in range(num_filts):
+        w = np.reshape(ndn_mod.networks[0].layers[1].weights[:, nn], [idims[2], idims[1], idims[0]])
+        k = np.zeros([idims[2], idims[1], nlags])
+        for yy in range(idims[2]):
+            for xx in range(idims[1]):
+                k[yy, xx, :] = np.matmul(tkerns, w[yy, xx, :])
+        ks[:, nn] = np.reshape(k, idims[1]*idims[2]*nlags)
+
+    return ks
+
+def side_ei_analyze( side_ndn ):
+
+    num_space = int(side_ndn.networks[0].input_dims[1])
+    num_cells = side_ndn.network_list[1]['layer_sizes'][-1]
+
+    num_units = side_ndn.networks[1].num_units[:]
+    num_layers = len(num_units)
+
+    wside = np.reshape(side_ndn.networks[1].layers[0].weights, [num_space, np.sum(num_units), num_cells])
+    num_inh = side_ndn.network_list[0]['num_inh']
+
+    cell_nrms = np.sum(side_ndn.networks[1].layers[0].weights, axis=0)
+    tlayer_present = side_ndn.networks[0].layers[0].filter_dims[1] == 1
+    if tlayer_present:
+        nlayers = num_layers - 1
+    else:
+        nlayers = num_layers
+    # EIweights = np.zeros([2, nlayers, num_cells])
+    EIprofiles = np.zeros([2, nlayers, num_space, num_cells])
+    num_exc = np.subtract(num_units, num_inh)
+
+    fcount = 0
+    for ll in range(num_layers):
+        ws = wside[:, range(fcount, fcount+num_units[ll]), :].copy()
+        fcount += num_units[ll]
+        if num_inh[ll] == 0:
+            ews = np.maximum(ws, 0)
+            iws = np.minimum(ws, 0)
+        else:
+            ews = ws[:, range(num_exc[ll]), :]
+            iws = ws[:, range(num_exc[ll], num_units[ll]), :]
+        if (ll == 0) or (tlayer_present == False):
+            EIprofiles[0, ll, :, :] = np.divide( np.sum(ews, axis=1), cell_nrms )
+            EIprofiles[1, ll, :, :] = np.divide( np.sum(iws, axis=1), cell_nrms )
+        if tlayer_present:
+            EIprofiles[0, ll-1, :, :] += np.divide( np.sum(ews, axis=1), cell_nrms )
+            EIprofiles[1, ll-1, :, :] += np.divide( np.sum(iws, axis=1), cell_nrms )
+    EIweights = np.sum(EIprofiles, axis=2)
+
+    return EIweights, EIprofiles
+
+
+def scaffold_nonconv_plot( side_ndn, with_inh=True, nolabels=True, skip_first_level=False, linewidth=1):
+
+    # validity check
+    assert len(side_ndn.network_list) == 2, 'This does not seem to be a standard scaffold network.'
+
+    num_cells = side_ndn.network_list[1]['layer_sizes'][-1]
+    num_units = side_ndn.networks[1].num_units[:]
+    num_layers = len(num_units)
+    scaff_ws = side_ndn.networks[1].layers[0].weights
+    cell_nrms = np.max(np.abs(side_ndn.networks[1].layers[0].weights), axis=0)
+    num_inh = side_ndn.network_list[0]['num_inh']
+    num_exc = np.subtract(num_units, num_inh)
+
+    fcount = 0
+    col_mod = 0
+    if skip_first_level:
+        col_mod = 1
+
+    subplot_setup(num_rows=1, num_cols=num_layers-col_mod)
+    plt.rcParams['lines.linewidth'] = linewidth
+    plt.rcParams['axes.linewidth'] = linewidth
+    for ll in range(num_layers):
+        ws = np.transpose(np.divide(scaff_ws[range(fcount, fcount+num_units[ll]), :].copy(), cell_nrms))
+
+        fcount += num_units[ll]
+        if (num_inh[ll] > 0) and with_inh:
+            ws[:, num_exc[ll]:] = np.multiply( ws[:, num_exc[ll]:], -1)
+        if not skip_first_level or (ll > 0):
+            ax = plt.subplot(1, num_layers-col_mod, ll+1-col_mod)
+
+            if with_inh:
+                plt.imshow(ws, aspect='auto', interpolation='none', cmap='bwr', vmin=-1, vmax=1)
+            else:
+                plt.imshow(ws, aspect='auto', interpolation='none', cmap='Greys', vmin=0, vmax=1)
+            if num_inh[ll] > 0:
+                plt.plot(np.multiply([1, 1], num_exc[ll]-0.5), [-0.5, num_cells-0.5], 'k')
+            if ~nolabels:
+                ax.set_xticks([])
+                ax.set_yticks([])
+    plt.show()
+
+
+def scaffold_plot_cell( side_ndn, cell_n, with_inh=True, nolabels=True, skip_first_level=False, linewidth=1):
+
+    # validity check
+    assert len(side_ndn.network_list) == 2, 'This does not seem to be a standard scaffold network.'
+
+    num_cells = side_ndn.network_list[1]['layer_sizes'][-1]
+    num_units = side_ndn.networks[1].num_units[:]
+    num_layers = len(num_units)
+
+    if 'biconv' in side_ndn.network_list[0]['layer_types']:
+        num_space = int(side_ndn.networks[0].input_dims[1])//2
+    else:
+        num_space = int(side_ndn.networks[0].input_dims[1])
+
+    cell_nrms = np.max(np.abs(side_ndn.networks[1].layers[0].weights), axis=0)
+    wside = np.reshape(side_ndn.networks[1].layers[0].weights, [num_space, np.sum(num_units), num_cells])
+    num_inh = side_ndn.network_list[0]['num_inh']
+    num_exc = np.subtract(num_units, num_inh)
+    #cell_nrms = np.sum(side_ndn.networks[1].layers[0].weights, axis=0)
+
+    fcount = 0
+    col_mod = 0
+    if skip_first_level:
+        col_mod = 1
+
+    subplot_setup(num_rows=1, num_cols=num_layers-col_mod)
+    plt.rcParams['lines.linewidth'] = linewidth
+    plt.rcParams['axes.linewidth'] = linewidth
+    for ll in range(num_layers):
+        ws = np.divide(wside[:, range(fcount, fcount+num_units[ll]), cell_n].copy(), cell_nrms[cell_n])
+
+        fcount += num_units[ll]
+        if (num_inh[ll] > 0) and with_inh:
+            ws[:, num_exc[ll]:] = np.multiply( ws[:, num_exc[ll]:], -1)
+            if side_ndn.network_list[0]['layer_types'][ll] == 'biconv':
+                more_inh_range = range(num_units[ll]//2-num_inh[ll], num_units[ll]//2)
+                ws[:, more_inh_range] = np.multiply(ws[:, more_inh_range], -1)
+        if not skip_first_level or (ll > 0):
+            ax = plt.subplot(1, num_layers-col_mod, ll+1-col_mod)
+
+            if with_inh:
+                plt.imshow(ws, aspect='auto', interpolation='none', cmap='bwr', vmin=-1, vmax=1)
+            else:
+                plt.imshow(ws, aspect='auto', interpolation='none', cmap='Greys', vmin=0, vmax=1)
+            if side_ndn.network_list[0]['layer_types'][ll] == 'biconv':
+                plt.plot(np.multiply([1, 1], num_units[ll]//2 - 0.5), [-0.5, num_space - 0.5], 'k')
+            if num_inh[ll] > 0:
+                plt.plot(np.multiply([1, 1], num_exc[ll]-0.5), [-0.5, num_space-0.5], 'k')
+                if side_ndn.network_list[0]['layer_types'][ll] == 'biconv':
+                    plt.plot(np.multiply([1, 1], num_exc[ll]-num_units[ll]//2 - 0.5), [-0.5, num_space - 0.5], 'k')
+            if ~nolabels:
+                ax.set_xticks([])
+                ax.set_yticks([])
+    plt.show()
+
+
+def plot_2dweights( w, input_dims=None, num_inh=0):
+    """w can be one dimension (in which case input_dims is required) or already shaped. """
+
+    if input_dims is not None:
+        w = np.reshape(w, [input_dims[1], input_dims[0]])
+    else:
+        input_dims = [w.shape[1], w.shape[0]]
+
+    num_exc = input_dims[0]-num_inh
+    w = np.divide(w, np.max(np.abs(w)))
+
+    fig, ax = plt.subplots(1)
+
+    if num_inh > 0:
+        w[:, num_exc:] = np.multiply(w[:, num_exc:], -1)
+        plt.imshow(w, interpolation='none', cmap='bwr', vmin=-1, vmax=1)
+    else:
+        plt.imshow(w, aspect='auto', interpolation='none', cmap='Greys', vmin=0, vmax=1)
+    if num_inh > 0:
+        plt.plot(np.multiply([1, 1], num_exc-0.5), [-0.5, input_dims[1]-0.5], 'k')
+    ax.set_yticklabels([])
+    ax.set_xticklabels([])
+
+
+def entropy(dist):
+
+    # normalize distribution
+    dist = np.divide( dist.astype('float32'), np.sum(dist) )
+    # make all zeros 1
+    dist[np.where(dist == 0)[0]] = 1
+    H = -np.sum( np.multiply( dist, np.log2(dist)) )
+
+    return H
+
+
+def best_val_mat(mat, min_or_max=0):
+
+    # Make sure a matrix (numpy)
+    mat = np.array(mat, dtype='float32')
+    if min_or_max == 0:
+        ax0 = np.min(mat, axis=0)
+        b1 = np.argmin(ax0)
+        b0 = np.argmin(mat[:, b1])
+    else:
+        ax0 = np.max(mat, axis=0)
+        b1 = np.argmax(ax0)
+        b0 = np.argmax(mat[:, b1])
+
+    b0 = int(b0)
+    b1 = int(b1)
+    return b0, b1
+
+
+def ffnet_health(ndn_mod, toplot=True):
+
+    num_nets = len(ndn_mod.networks)
+    whealth = [None]*num_nets
+    bhealth = [None]*num_nets
+    max_layers = 0
+    for nn in range(num_nets):
+        num_layers = len(ndn_mod.networks[nn].layers)
+        whealth[nn] = [None]*num_layers
+        bhealth[nn] = [None]*num_layers
+        if num_layers > max_layers:
+            max_layers = num_layers
+        for ll in range(num_layers):
+            whealth[nn][ll] = np.std(ndn_mod.networks[nn].layers[ll].weights, axis=0)
+            bhealth[nn][ll] = ndn_mod.networks[nn].layers[ll].biases[0, :]
+
+    if toplot:
+        subplot_setup(num_nets * 2, max_layers + 1)
+        for nn in range(num_nets):
+            num_layers = len(ndn_mod.networks[nn].layers)
+            for ll in range(num_layers):
+                plt.subplot(num_nets*2, max_layers, (2*nn)*max_layers+ll+1)
+                _=plt.hist(whealth[nn][ll], 20)
+                plt.title("n%dL%d ws" % (nn, ll))
+                plt.subplot(num_nets*2, max_layers, (2*nn+1)*max_layers+ll+1)
+                _=plt.hist(bhealth[nn][ll], 20)
+                plt.title("n%dL%d bs" % (nn, ll))
+        plt.show()
+
+    return whealth, bhealth
 

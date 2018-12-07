@@ -4,14 +4,8 @@ from __future__ import print_function
 from __future__ import division
 
 import tensorflow as tf
-import numpy as np
 from .layer import *
-#from .layer import ConvLayer
-#from .layer import SepLayer
-#from .layer import ConvSepLayer
-#from .layer import AddLayer
-#from .layer import SpikeHistoryLayer
-#from .layer import BiConvLayer
+
 
 class FFNetwork(object):
     """Implementation of simple fully-connected feed-forward neural network. 
@@ -46,38 +40,45 @@ class FFNetwork(object):
                 [num_lags, num_x_pix, num_y_pix]. If the input does not have 
                 spatial or temporal structure, this should be 
                 [1, num_inputs, 1]
-            params_dict (dict): contains parameters about details of FFnetwork
-            params_dict['layer_sizes'] (list of ints): list of layer sizes, 
-                including input and output. All arguments (input size) can be 
-                up to a 3-dimensional list. 
-                REQUIRED (NO DEFAULT)
-            params_dict['num_inh'] (int or list of ints): denotes number of 
-                inhibitory units in each layer. This specifies the output of 
-                that number of units multiplied by -1
-                DEFAULT = 0 (and having any single value will be used for all 
-                layers)
-            params_dict['activation_funcs'] (str or list of strs, optional): 
-                pointwise function for each layer; replicated if a single 
-                element. 
-                DEFAULT = 'relu'. See Layer class for other options.
-            params_dict['pos_constraints'] (bool or list of bools, optional): 
-                constrains all weights to be positive
-                DEFAULTS = False.
-            params_dict['reg_initializer'] (list): a list of dictionaries, one 
-                for each layer. Within the dictionary, reg_type/vals as 
-                key-value pairs.
-                DEFAULT = None
-            params_dict['weights_initializer'] (str or list of strs, optional): 
-                initializer for the weights in each layer; replicated if a 
-                single element.
-                DEFAULT = 'trunc_normal'. See Layer class for other options.
-            params_dict['biases_initializer'] (str or list of strs, optional): 
-                initializer for the biases in each layer; replicated if a 
-                single element.
-                DEFAULT = 'zeros'. See Layer class for other options.
-            params_dict['log_activations'] (bool, optional): True to use 
-                tf.summary on layer activations
-                DEFAULT = False
+
+            params_dict (dict): contains parameters about details of FFnetwork:
+                params_dict['xstim_n'] (list of ints or None): If not none, the external
+                    stimulus that this network gets input from.
+                params_dict['ffnet_n'] (list of ints or None): If not none, the ffnetwork
+                    that this network gets input from.
+                params_dict['layer_sizes'] (list of ints): list of layer sizes. All
+                    arguments (input size) can be up to a 3-dimensional list.
+                    REQUIRED (NO DEFAULT)
+                params_dict['layer_types'] (list of strs): the type of layer specified
+                    for all layers in the ffnetwork.
+                params_dict['activation_funcs'] (str or list of strs, optional):
+                    pointwise function for each layer; replicated if a single element.
+                    DEFAULT = 'relu'. See Layer class for other options.
+                params_dict['num_inh'] (int or list of ints): denotes number of
+                    inhibitory units in each layer. This specifies the output of
+                    that number of units multiplied by -1
+                    DEFAULT = 0 (and having any single value will be used for all layers)
+                params_dict['pos_constraints'] (bool or list of bools, optional):
+                    constrains all weights to be positive
+                    DEFAULTS = False.
+                params_dict['normalize_weights'] (list of ints): normalization setting for
+                    each layer.
+                params_dict['conv_filter_widths'] (list of ints, None): when set, the width
+                    of the convolutional filter for each layer
+                params_dict['shift_spacing'] (list of ints, None): when set, the shift-spacing
+                    for each layer
+                params_dict['reg_initializer'] (list): a list of dictionaries, one
+                    for each layer. Within the dictionary, reg_type/vals as key-value pairs.
+                    DEFAULT = None
+                params_dict['weights_initializer'] (str or list of strs, optional):
+                    initializer for the weights in each layer; replicated if a single element.
+                    DEFAULT = 'trunc_normal'. See Layer class for other options.
+                params_dict['biases_initializer'] (str or list of strs, optional):
+                    initializer for the biases in each layer; replicated if a single element.
+                    DEFAULT = 'zeros'. See Layer class for other options.
+                params_dict['log_activations'] (bool, optional): True to use, see
+                    tf.summary on layer activations
+                    DEFAULT = False
 
         Raises:
             TypeError: If `scope` is not specified
@@ -221,6 +222,21 @@ class FFNetwork(object):
                     pos_constraint=network_params['pos_constraints'][nn],
                     log_activations=network_params['log_activations']))
 
+            elif self.layer_types[nn] == 'readout':
+
+                self.layers.append(ReadoutLayer(
+                    scope='sep_layer_%i' % nn,
+                    input_dims=layer_sizes[nn],
+                    output_dims=layer_sizes[nn + 1],
+                    activation_func=network_params['activation_funcs'][nn],
+                    normalize_weights=network_params['normalize_weights'][nn],
+                    weights_initializer=network_params['weights_initializers'][nn],
+                    biases_initializer=network_params['biases_initializers'][nn],
+                    reg_initializer=network_params['reg_initializers'][nn],
+                    num_inh=network_params['num_inh'][nn],
+                    pos_constraint=network_params['pos_constraints'][nn],
+                    log_activations=network_params['log_activations']))
+
             elif self.layer_types[nn] == 'add':
 
                 self.layers.append(AddLayer(
@@ -259,11 +275,40 @@ class FFNetwork(object):
                         conv_filter_size[2] = \
                             network_params['conv_filter_widths'][nn]
 
-                self.layers.append(ConvLayer(
+                if self.layer_types[nn] == 'conv':
+                    self.layers.append(ConvLayer(
+                        scope='conv_layer_%i' % nn,
+                        input_dims=layer_sizes[nn],
+                        num_filters=layer_sizes[nn+1],
+                        filter_dims=conv_filter_size,
+                        shift_spacing=network_params['shift_spacing'][nn],
+                        activation_func=network_params['activation_funcs'][nn],
+                        normalize_weights=network_params['normalize_weights'][nn],
+                        weights_initializer=network_params['weights_initializers'][nn],
+                        biases_initializer=network_params['biases_initializers'][nn],
+                        reg_initializer=network_params['reg_initializers'][nn],
+                        num_inh=network_params['num_inh'][nn],
+                        pos_constraint=network_params['pos_constraints'][nn],
+                        log_activations=network_params['log_activations']))
+
+                # Modify output size to take into account shifts
+                if nn < self.num_layers:
+                    layer_sizes[nn+1] = self.layers[nn].output_dims
+
+            elif self.layer_types[nn] == 'conv_xy':
+
+                if network_params['conv_filter_widths'][nn] is not None:
+                    width = network_params['conv_filter_widths'][nn]
+                    conv_filter_size = [layer_sizes[nn][0], width, width]
+                else:
+                    conv_filter_size = layer_sizes[nn]
+
+                self.layers.append(ConvXYLayer(
                     scope='conv_layer_%i' % nn,
                     input_dims=layer_sizes[nn],
-                    num_filters=layer_sizes[nn+1],
+                    num_filters=layer_sizes[nn + 1],
                     filter_dims=conv_filter_size,
+                    xy_out=network_params['xy_out'][nn],
                     shift_spacing=network_params['shift_spacing'][nn],
                     activation_func=network_params['activation_funcs'][nn],
                     normalize_weights=network_params['normalize_weights'][nn],
@@ -276,7 +321,7 @@ class FFNetwork(object):
 
                 # Modify output size to take into account shifts
                 if nn < self.num_layers:
-                    layer_sizes[nn+1] = self.layers[nn].output_dims
+                    layer_sizes[nn + 1] = self.layers[nn].output_dims
 
             elif self.layer_types[nn] == 'convsep':
 
@@ -308,6 +353,31 @@ class FFNetwork(object):
                 # Modify output size to take into account shifts
                 if nn < self.num_layers:
                     layer_sizes[nn+1] = self.layers[nn].output_dims
+
+            elif self.layer_types[nn] == 'conv_readout':
+
+                self.layers.append(ConvReadoutLayer(
+                    scope='conv_readout_layer_%i' % nn,
+                    # this should be the case:
+                    # nlags=network_params['time_expand'][nn],
+                    # but since we don't have temporal side network we'll do this for now:
+                    nlags=None,
+                    input_dims=layer_sizes[nn],
+                    num_filters=layer_sizes[nn + 1],
+                    xy_out=network_params['xy_out'][nn],
+                    activation_func=network_params['activation_funcs'][nn],
+                    normalize_weights=network_params['normalize_weights'][nn],
+                    weights_initializer=network_params['weights_initializers'][nn],
+                    biases_initializer=network_params['biases_initializers'][nn],
+                    reg_initializer=network_params['reg_initializers'][nn],
+                    num_inh=network_params['num_inh'][nn],
+                    pos_constraint=network_params['pos_constraints'][nn],
+                    log_activations=network_params['log_activations']))
+
+                # Modify output size to take into account shifts
+                if nn < self.num_layers:
+                    layer_sizes[nn + 1] = self.layers[nn].output_dims
+
 
             elif self.layer_types[nn] == 'biconv':
 
@@ -425,8 +495,7 @@ class SideNetwork(FFNetwork):
                 DEFAULT = 1
             params_dict['binocular'] (boolean): currently doesn't work
                 DEFAULT = FALSE
-            params_dict['layer_sizes'] (list of ints): see FFNetwork 
-                documentation
+            params_dict['layer_sizes'] (list of ints): see FFNetwork documentation
             params_dict['activation_funcs'] (str or list of strs, optional): 
                 see FFNetwork documentation
             params_dict['weights_initializer'] (str or list of strs, optional): 
@@ -439,38 +508,51 @@ class SideNetwork(FFNetwork):
                 FFNetwork documentation
             params_dict['pos_constraint'] (bool or list of bools, optional): 
                 see FFNetwork documentation
-            params_dict['log_activations'] (bool, optional): see FFNetwork 
-                documentation
+            params_dict['log_activations'] (bool, optional): see FFNetwork documentation
                 
         """
 
+        _conv_types = ['conv', 'convsep', 'biconv']
+        isbinocular = False
         # Determine dimensions of input and pass into regular network initializer
         input_layer_sizes = input_network_params['layer_sizes'][:]
         # Check if entire network is convolutional (then will have spatial input dims)
         all_convolutional = False
         nonconv_inputs = np.zeros(len(input_layer_sizes), dtype=int)
-        if (input_network_params['layer_types'][0] == 'conv') or \
-                (input_network_params['layer_types'][0] == 'biconv'):
+        if input_network_params['layer_types'][0] in _conv_types:
             # then check that all are conv
             all_convolutional = True
             for nn in range(len(input_layer_sizes)):
-                if input_network_params['layer_types'][nn] == 'conv' or \
-                        (input_network_params['layer_types'][0] == 'biconv'):
-                    nonconv_inputs[nn] = input_layer_sizes[nn]*input_network_params['input_dims'][1] *\
+                if input_network_params['layer_types'][nn] in _conv_types:
+                    nonconv_inputs[nn] = input_layer_sizes[nn] * input_network_params['input_dims'][1] *\
                                          input_network_params['input_dims'][2]
+                    if input_network_params['layer_types'][nn] == 'biconv':
+                        isbinocular = True
+                        # then twice as many outputs as filters
+                        nonconv_inputs[nn] *= 2
                 else:
                     all_convolutional = False
                     nonconv_inputs[nn] = input_layer_sizes[nn]
+        else:
+            nonconv_inputs = input_layer_sizes[:]
 
         if all_convolutional:
-            nx_ny = input_network_params['input_dims'][1:3]
-            if input_network_params['layer_types'][0] == 'biconv':
-                nx_ny[0] = int(nx_ny[0]/2)
-                input_layer_sizes[0] = input_layer_sizes[0]*2
-            input_dims = [max(input_layer_sizes)*len(input_layer_sizes), nx_ny[0], nx_ny[1]]
+            nx_ny = input_network_params['input_dims'][1:]
+            if isbinocular:
+                nx_ny[0] = int(nx_ny[0] / 2)
+
+                if input_network_params['layer_types'][0] == 'biconv':
+                    input_layer_sizes[0] = input_layer_sizes[0]*2
+                elif input_network_params['layer_types'][1] == 'biconv':
+                    input_layer_sizes[0] = input_layer_sizes[0] * 2
+                    input_layer_sizes[1] = input_layer_sizes[1] * 2
+            #input_dims = [max(input_layer_sizes)*len(input_layer_sizes), nx_ny[0], nx_ny[1]]
+
+            input_dims = [np.sum(input_layer_sizes), nx_ny[0], nx_ny[1]]
         else:
             nx_ny = [1, 1]
-            input_dims = [len(input_layer_sizes), max(nonconv_inputs), 1]
+            #input_dims = [len(input_layer_sizes), max(nonconv_inputs), 1]
+            input_dims = [np.sum(nonconv_inputs), 1, 1]
 
         super(SideNetwork, self).__init__(
             scope=scope,
@@ -482,6 +564,9 @@ class SideNetwork(FFNetwork):
             self.num_units = input_layer_sizes
         else:
             self.num_units = nonconv_inputs
+
+        # Set up potential side_network regularization (in first layer)
+        self.layers[0].reg.scaffold_setup(self.num_units)
     # END SideNetwork.__init__
 
     def build_graph(self, input_network, params_dict=None):
@@ -489,27 +574,37 @@ class SideNetwork(FFNetwork):
         whole network graph, rather than just a link to its output, so that it 
         can be assembled here"""
 
-        max_units = max(self.num_units)
         num_layers = len(self.num_units)
         with tf.name_scope(self.scope):
 
             # Assemble network-inputs into the first layer
             for input_nn in range(num_layers):
 
-                new_slice = input_network.layers[input_nn].outputs
-                if max_units-self.num_units[input_nn] > 0:
-                    layer_padding = tf.constant([
-                        [0, 0],
-                        [0, (max_units-self.num_units[input_nn])*self.num_space]])
-                    new_slice = tf.pad(new_slice, layer_padding)
+                if (self.num_space == 1) or \
+                        self.num_space == np.prod(input_network.layers[input_nn].output_dims[1:]):
+                    new_slice = tf.reshape(input_network.layers[input_nn].outputs,
+                                           [-1, self.num_space, self.num_units[input_nn]])
+                else:  # spatial positions converted to different filters (binocular)
+                    native_space = np.prod(input_network.layers[input_nn].output_dims[1:])
+                    native_filters = input_network.layers[input_nn].output_dims[0]
+                    tmp = tf.reshape(input_network.layers[input_nn].outputs,
+                                           [-1, 1, native_space, native_filters])
+                    # Reslice into correct spatial arrangement
+                    left_post = tf.slice(tmp, [0, 0, 0, 0], [-1, -1, self.num_space, -1])
+                    right_post = tf.slice(tmp, [0, 0, self.num_space, 0],
+                                          [-1, -1, self.num_space, -1])
+
+                    new_slice = tf.reshape(tf.concat([left_post, right_post], axis=3),
+                                           [-1, self.num_space, self.num_units[input_nn]])
 
                 if input_nn == 0:
-                    inputs_raw = tf.expand_dims(new_slice, 2)
+                    inputs_raw = new_slice
                 else:
-                    inputs_raw = tf.concat([inputs_raw, tf.expand_dims(new_slice, 2)], 2)
+                    inputs_raw = tf.concat([inputs_raw, new_slice], 2)
 
             # Need to put layer dimension with the filters as bottom dimension instead of top
-            inputs = tf.reshape(inputs_raw, [-1, num_layers*max_units*self.num_space])
+            inputs = tf.reshape(inputs_raw, [-1, np.sum(self.num_units)*self.num_space] )
+            #inputs = tf.reshape(inputs_raw, [-1, num_layers*max_units*self.num_space])
 
             # Now standard graph-build (could just call the parent with inputs)
             for layer in range(self.num_layers):

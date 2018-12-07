@@ -88,7 +88,6 @@ class TFFNetwork(FFNetwork):
                     nlags=network_params['time_expand'][nn],
                     input_dims=layer_sizes[nn],
                     output_dims=layer_sizes[nn+1],
-                    partial_fit=network_params['partial_fit'][nn],
                     activation_func=network_params['activation_funcs'][nn],
                     normalize_weights=network_params['normalize_weights'][nn],
                     weights_initializer=network_params['weights_initializers'][nn],
@@ -155,6 +154,38 @@ class TFFNetwork(FFNetwork):
                 if nn < self.num_layers:
                     layer_sizes[nn+1] = self.layers[nn].output_dims
 
+            elif self.layer_types[nn] == 'conv_xy':
+                if network_params['conv_filter_widths'][nn] is None:
+                    conv_filter_size = layer_sizes[nn]
+                else:
+                    conv_filter_size = [
+                        layer_sizes[nn][0],
+                        network_params['conv_filter_widths'][nn], 1]
+                    if layer_sizes[nn][2] > 1:
+                        conv_filter_size[2] = \
+                            network_params['conv_filter_widths'][nn]
+
+                self.layers.append(ConvXYLayer(
+                    scope='conv_xy_layer_%i' % nn,
+                    nlags=network_params['time_expand'][nn],
+                    input_dims=layer_sizes[nn],
+                    num_filters=layer_sizes[nn+1],
+                    filter_dims=conv_filter_size,
+                    xy_out=network_params['xy_out'][nn],
+                    shift_spacing=network_params['shift_spacing'][nn],
+                    activation_func=network_params['activation_funcs'][nn],
+                    normalize_weights=network_params['normalize_weights'][nn],
+                    weights_initializer=network_params['weights_initializers'][nn],
+                    biases_initializer=network_params['biases_initializers'][nn],
+                    reg_initializer=network_params['reg_initializers'][nn],
+                    num_inh=network_params['num_inh'][nn],
+                    pos_constraint=network_params['pos_constraints'][nn],
+                    log_activations=network_params['log_activations']))
+
+                # Modify output size to take into account shifts
+                if nn < self.num_layers:
+                    layer_sizes[nn+1] = self.layers[nn].output_dims
+
             elif self.layer_types[nn] == 'convsep':
                 if network_params['conv_filter_widths'][nn] is None:
                     conv_filter_size = layer_sizes[nn]
@@ -167,7 +198,7 @@ class TFFNetwork(FFNetwork):
                             network_params['conv_filter_widths'][nn]
 
                 self.layers.append(ConvSepLayer(
-                    scope='sepconv_layer_%i' % nn,
+                    scope='convsep_layer_%i' % nn,
                     nlags=network_params['time_expand'][nn],
                     input_dims=layer_sizes[nn],
                     num_filters=layer_sizes[nn+1],
@@ -186,6 +217,59 @@ class TFFNetwork(FFNetwork):
                 if nn < self.num_layers:
                     layer_sizes[nn+1] = self.layers[nn].output_dims
 
+            elif self.layer_types[nn] == 'conv_readout':
+                self.layers.append(ConvReadoutLayer(
+                    scope='conv_readout_layer_%i' % nn,
+                    nlags=network_params['time_expand'][nn],
+                    input_dims=layer_sizes[nn],
+                    num_filters=layer_sizes[nn + 1],
+                    xy_out=network_params['xy_out'][nn],
+                    activation_func=network_params['activation_funcs'][nn],
+                    normalize_weights=network_params['normalize_weights'][nn],
+                    weights_initializer=network_params['weights_initializers'][nn],
+                    biases_initializer=network_params['biases_initializers'][nn],
+                    reg_initializer=network_params['reg_initializers'][nn],
+                    num_inh=network_params['num_inh'][nn],
+                    pos_constraint=network_params['pos_constraints'][nn],
+                    log_activations=network_params['log_activations']))
+
+                # Modify output size to take into account shifts
+                if nn < self.num_layers:
+                    layer_sizes[nn + 1] = self.layers[nn].output_dims
+
+
+            elif self.layer_types[nn] == 'gabor':
+                if network_params['conv_filter_widths'][nn] is None:
+                    conv_filter_size = layer_sizes[nn]
+                else:
+                    conv_filter_size = [
+                        layer_sizes[nn][0],
+                        network_params['conv_filter_widths'][nn], 1]
+                    if layer_sizes[nn][2] > 1:
+                        conv_filter_size[2] = \
+                            network_params['conv_filter_widths'][nn]
+
+                self.layers.append(GaborLayer(
+                    scope='gabor_layer_%i' % nn,
+                    nlags=network_params['time_expand'][nn],
+                    input_dims=layer_sizes[nn],
+                    num_filters=layer_sizes[nn+1],
+                    filter_dims=conv_filter_size,
+                    shift_spacing=network_params['shift_spacing'][nn],
+                    activation_func=network_params['activation_funcs'][nn],
+                    normalize_weights=network_params['normalize_weights'][nn],
+                    weights_initializer=network_params['weights_initializers'][nn],
+                    biases_initializer=network_params['biases_initializers'][nn],
+                    reg_initializer=network_params['reg_initializers'][nn],
+                    num_inh=network_params['num_inh'][nn],
+                    pos_constraint=network_params['pos_constraints'][nn],
+                    log_activations=network_params['log_activations']))
+
+                # Modify output size to take into account shifts
+                if nn < self.num_layers:
+                    layer_sizes[nn+1] = self.layers[nn].output_dims
+
+
             elif self.layer_types[nn] == 'biconv':
                 if network_params['conv_filter_widths'][nn] is None:
                     conv_filter_size = layer_sizes[nn]
@@ -198,7 +282,7 @@ class TFFNetwork(FFNetwork):
                             network_params['conv_filter_widths'][nn]
 
                 self.layers.append(BiConvLayer(
-                    scope='conv_layer_%i' % nn,
+                    scope='buiconv_layer_%i' % nn,
                     nlags=network_params['time_expand'][nn],
                     input_dims=layer_sizes[nn],
                     num_filters=layer_sizes[nn+1],
@@ -222,10 +306,11 @@ class TFFNetwork(FFNetwork):
                     scope='temporal_layer_%i' % nn,
                     nlags=network_params['time_expand'][nn],
                     input_dims=layer_sizes[nn],
-                    output_dims=self.batch_size,
+                    output_dims=layer_sizes[nn],
                     num_filters=layer_sizes[nn + 1],
+                    filter_width=network_params['ca_tent_widths'][nn],
+                    activation_func=network_params['activation_funcs'][nn],
                     batch_size=self.batch_size,
-                    time_spread=self.time_spread,
                     normalize_weights=network_params['normalize_weights'][nn],
                     weights_initializer=network_params['weights_initializers'][nn],
                     biases_initializer=network_params['biases_initializers'][nn],
@@ -246,6 +331,7 @@ class TFFNetwork(FFNetwork):
                     output_dims=layer_sizes[nn],
                     num_filters=layer_sizes[nn + 1],
                     filter_width=network_params['ca_tent_widths'][nn],
+                    activation_func=network_params['activation_funcs'][nn],
                     batch_size=self.batch_size,
                     normalize_weights=network_params['normalize_weights'][nn],
                     weights_initializer=network_params['weights_initializers'][nn],
@@ -329,3 +415,5 @@ def time_expand(inputs, batch_sz, nlags):
         expanded_inputs = tf.reshape(expanded_inputs_tr, (batch_sz, -1))
 
     return expanded_inputs
+
+# define readout_computation here
